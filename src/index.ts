@@ -5,7 +5,8 @@ import {
   createServer,
 } from "node:http";
 
-import { writeFile, readFile, mkdirSync, statSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
+import { writeFile, readFile } from "node:fs/promises";
 
 const crypto = require("node:crypto");
 
@@ -49,7 +50,7 @@ function hashRequest(req: IncomingMessage, data: Buffer) {
     .digest("base64url");
 }
 
-function saveResponse(
+async function saveResponse(
   hash: string,
   encoded: EncodedResponse,
   graphQLOperation: string | null
@@ -57,100 +58,90 @@ function saveResponse(
   const filename = graphQLOperation
     ? `cached/${graphQLOperation}_${hash}`
     : `cached/${hash}`;
-  writeFile(filename, JSON.stringify(encoded), (err) => {
-    if (err) throw err;
-  });
+  await writeFile(filename, JSON.stringify(encoded));
 }
 
-function getCachedResponse(
+async function getCachedResponse(
   hash: string,
-  graphQLOperation: string | null,
-  cb: (encoded: EncodedResponse | null) => void
+  graphQLOperation: string | null
 ) {
   const filename = graphQLOperation
     ? `cached/${graphQLOperation}_${hash}`
     : `cached/${hash}`;
-  readFile(filename, (err, filedata) => {
-    if (err) cb(null);
-    else cb(JSON.parse(filedata.toString()));
-  });
+  try {
+    const filedata = await readFile(filename);
+    return JSON.parse(filedata.toString());
+  } catch (err) {
+    return null;
+  }
 }
 
-function forwardRequest(
+async function forwardRequest(
   origReq: IncomingMessage,
-  data: Buffer,
-  cb: (err: Error | null, encoded?: EncodedResponse) => void
-) {
-  const req = request(
-    {
-      method: origReq.method,
-      host: "127.0.0.1",
-      port: PROXY_PORT,
-      path: origReq.url,
-      headers: origReq.headers,
-    },
-    (res) => {
-      const buf: Buffer[] = [];
-      res.on("data", (chunk) => {
-        buf.push(chunk);
-      });
-      res.on("end", () => {
-        cb(null, {
-          headers: res.rawHeaders,
-          statusCode: res.statusCode ?? 200,
-          body: Buffer.concat(buf).toString(),
+  data: Buffer
+): Promise<EncodedResponse> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        method: origReq.method,
+        host: "127.0.0.1",
+        port: PROXY_PORT,
+        path: origReq.url,
+        headers: origReq.headers,
+      },
+      (res) => {
+        const buf: Buffer[] = [];
+        res.on("data", (chunk) => {
+          buf.push(chunk);
         });
-      });
-      res.on("error", (err) => {
-        cb(err);
-      });
-    }
-  );
+        res.on("end", () => {
+          resolve({
+            headers: res.rawHeaders,
+            statusCode: res.statusCode ?? 200,
+            body: Buffer.concat(buf).toString(),
+          });
+        });
+        res.on("error", (err) => {
+          reject(err);
+        });
+      }
+    );
 
-  req.on("error", (err) => {
-    cb(err);
+    req.on("error", (err) => {
+      reject(err);
+    });
+    req.write(data);
+    req.end();
   });
-  req.write(data);
-  req.end();
 }
 
-function replayOrForward(
-  req: IncomingMessage,
-  data: Buffer,
-  cb: (encoded: EncodedResponse) => void
-) {
+async function replayOrForward(req: IncomingMessage, data: Buffer) {
   const graphQLOperation = req.url?.startsWith("/graphql")
     ? JSON.parse(data.toString()).operationName
     : null;
   const hash = hashRequest(req, data);
 
-  const forward = () => {
-    forwardRequest(req, data, (forwardErr, encoded) => {
-      if (forwardErr || !encoded) {
-        cb({
-          statusCode: 502,
-          headers: ["content-type", "application/json"],
-          body: `{"errors":[{"message":"Unable to reach server on ${PROXY_PORT} for ${
-            req.method
-          } ${req.url} ${
-            graphQLOperation || ""
-          }","extensions":{"code":"BAD_GATEWAY"}}]}`,
-        });
-      } else {
-        saveResponse(hash, encoded, graphQLOperation);
-        cb(encoded);
-      }
-    });
-  };
-
-  if (SKIP_CACHE) {
-    forward();
-  } else {
-    getCachedResponse(hash, graphQLOperation, (encoded) => {
-      if (!encoded) forward();
-      else cb(encoded);
-    });
+  let encoded: EncodedResponse | null = null;
+  if (!SKIP_CACHE) {
+    encoded = await getCachedResponse(hash, graphQLOperation);
   }
+  if (!encoded) {
+    try {
+      encoded = await forwardRequest(req, data);
+      await saveResponse(hash, encoded!, graphQLOperation);
+    } catch {
+      encoded = {
+        statusCode: 502,
+        headers: ["content-type", "application/json"],
+        body: `{"errors":[{"message":"Unable to reach server on ${PROXY_PORT} for ${
+          req.method
+        } ${req.url} ${
+          graphQLOperation || ""
+        }","extensions":{"code":"BAD_GATEWAY"}}]}`,
+      };
+    }
+  }
+  return encoded;
 }
 
 function serve(req: IncomingMessage, res: ServerResponse) {
@@ -158,16 +149,15 @@ function serve(req: IncomingMessage, res: ServerResponse) {
   req.on("data", (chunk) => {
     requestBody.push(chunk);
   });
-  req.on("end", () => {
+  req.on("end", async () => {
     const data = Buffer.concat(requestBody);
 
-    replayOrForward(req, data, (encoded) => {
-      res.statusCode = encoded.statusCode;
-      for (let i = 0; i < encoded.headers.length - 1; i += 2) {
-        res.setHeader(encoded.headers[i], encoded.headers[i + 1]);
-      }
-      res.end(encoded.body);
-    });
+    const encoded = await replayOrForward(req, data);
+    res.statusCode = encoded.statusCode;
+    for (let i = 0; i < encoded.headers.length - 1; i += 2) {
+      res.setHeader(encoded.headers[i], encoded.headers[i + 1]);
+    }
+    res.end(encoded.body);
   });
   req.on("error", (err) => {
     throw err;
@@ -175,6 +165,7 @@ function serve(req: IncomingMessage, res: ServerResponse) {
 }
 
 if (!statSync("cached", { throwIfNoEntry: false })) mkdirSync("cached");
+
 const server = createServer(serve);
 server.listen(PORT, "127.0.0.1");
 console.log(
