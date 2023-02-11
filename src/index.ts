@@ -12,9 +12,19 @@ const crypto = require("node:crypto");
 
 const cachedHeaders = new Set("session");
 
+if (parseBooleanFlag("h", "help")) {
+  console.log(`  -h, --help          print help
+  -p, --port          run server on this port
+  -P, --proxy-port    proxy to server on this port
+  -s, --skip-cache    always forward requests to proxied server, overwriting any existing cache
+  -d, --cache-dir     directory for cached responses`);
+  process.exit();
+}
+
 const PORT = Number(parseFlag("p", "port", "1234"));
 const PROXY_PORT = Number(parseFlag("P", "proxy-port", "7001"));
 const SKIP_CACHE = parseBooleanFlag("s", "skip-cache");
+const CACHE_DIR = parseFlag("d", "cache-dir", "cache");
 
 type EncodedResponse = {
   statusCode: number;
@@ -36,6 +46,10 @@ function parseBooleanFlag(shortflag: string, longflag: string) {
   return true;
 }
 
+function cacheFilename(hash: string, graphQLOperation: string | null) {
+  return graphQLOperation ? `${graphQLOperation}_${hash}` : `${hash}`;
+}
+
 function hashRequest(req: IncomingMessage, data: Buffer) {
   const headerNames = Object.keys(req.headers).filter((h) =>
     cachedHeaders.has(h)
@@ -55,22 +69,21 @@ async function saveResponse(
   encoded: EncodedResponse,
   graphQLOperation: string | null
 ) {
-  const filename = graphQLOperation
-    ? `cached/${graphQLOperation}_${hash}`
-    : `cached/${hash}`;
-  await writeFile(filename, JSON.stringify(encoded));
+  await writeFile(
+    `${CACHE_DIR}/${cacheFilename(hash, graphQLOperation)}`,
+    JSON.stringify(encoded)
+  );
 }
 
 async function getCachedResponse(
   hash: string,
   graphQLOperation: string | null
 ) {
-  const filename = graphQLOperation
-    ? `cached/${graphQLOperation}_${hash}`
-    : `cached/${hash}`;
   try {
-    const filedata = await readFile(filename);
-    return JSON.parse(filedata.toString());
+    const data = await readFile(
+      `${CACHE_DIR}/${cacheFilename(hash, graphQLOperation)}`
+    );
+    return JSON.parse(data.toString());
   } catch (err) {
     return null;
   }
@@ -124,12 +137,17 @@ async function replayOrForward(req: IncomingMessage, data: Buffer) {
   let encoded: EncodedResponse | null = null;
   if (!SKIP_CACHE) {
     encoded = await getCachedResponse(hash, graphQLOperation);
+    if (encoded) {
+      console.log(`cached ${cacheFilename(hash, graphQLOperation)}`);
+    }
   }
   if (!encoded) {
     try {
+      console.log(`proxying ${cacheFilename(hash, graphQLOperation)}`);
       encoded = await forwardRequest(req, data);
       await saveResponse(hash, encoded!, graphQLOperation);
     } catch {
+      console.log(`proxy error ${cacheFilename(hash, graphQLOperation)}`);
       encoded = {
         statusCode: 502,
         headers: ["content-type", "application/json"],
@@ -164,7 +182,7 @@ function serve(req: IncomingMessage, res: ServerResponse) {
   });
 }
 
-if (!statSync("cached", { throwIfNoEntry: false })) mkdirSync("cached");
+if (!statSync(CACHE_DIR, { throwIfNoEntry: false })) mkdirSync(CACHE_DIR);
 
 const server = createServer(serve);
 server.listen(PORT, "127.0.0.1");
