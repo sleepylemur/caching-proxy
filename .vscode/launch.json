@@ -1,0 +1,17 @@
+{
+  "configurations": [
+  {
+    "console": "integratedTerminal",
+    "internalConsoleOptions": "neverOpen",
+    "name": "nodemon",
+    "args": ["start"],
+    "request": "launch",
+    "restart": true,
+    "runtimeExecutable": "yarn",
+    "skipFiles": [
+      "<node_internals>/**"
+    ],
+    "type": "node"
+  }
+  ]
+}

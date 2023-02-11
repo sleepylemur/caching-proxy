@@ -1,0 +1,14 @@
+{
+  "name": "caching-proxy",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "nodemon --watch dist dist/index.js"
+  },
+  "devDependencies": {
+    "@tsconfig/node16": "^1.0.3",
+    "@types/node": "^18.13.0",
+    "nodemon": "^2.0.20"
+  }
+}
