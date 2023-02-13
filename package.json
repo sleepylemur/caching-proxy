@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "main": "index.js",
   "license": "MIT",
+  "bin": {
+    "proxy": "dist/index.js"
+  },
   "scripts": {
-    "start": "nodemon --watch dist dist/index.js"
+    "start": "nodemon --watch dist dist/index.js",
+    "build": "tsc --build"
   },
   "devDependencies": {
     "@tsconfig/node16": "^1.0.3",
