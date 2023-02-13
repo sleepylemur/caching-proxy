@@ -7,8 +7,10 @@
     "proxy": "dist/index.js"
   },
   "scripts": {
-    "start": "nodemon --watch dist dist/index.js",
-    "build": "tsc --build"
+    "start": "node dist/index.js",
+    "start:watch": "nodemon --watch dist dist/index.js",
+    "build": "tsc --build",
+    "build:watch": "tsc --watch"
   },
   "devDependencies": {
     "@tsconfig/node16": "^1.0.3",
